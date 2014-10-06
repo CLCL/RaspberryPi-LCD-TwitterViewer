@@ -1,0 +1,581 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin;
+use File::Spec;
+use lib File::Spec->catdir($FindBin::Bin, 'local/lib/perl5');
+use lib $FindBin::Bin;
+use Adafruit_CharLCDPlate;
+use AnyEvent::Twitter::Stream;
+use Encode;
+use HiPi::Device::I2C;
+use HiPi::BCM2835::I2C;
+use Proc::Daemon; 
+use Time::Piece;
+use utf8;
+use YAML;
+my $script_dir = $FindBin::Bin;  # カレントディレクトリ
+
+binmode STDOUT => ':utf8';
+
+# デバッグ用定数
+my $TALK = 0;
+my $DAEMON = 1;
+my $log_dir   = "$script_dir/log";
+mkdir $log_dir unless -e $log_dir;
+my $log_file  = "$log_dir/out.log";
+my $err_file  = "$log_dir/err.log";
+my $conf_file = 'lcdtwit.yaml';
+# 設定読み込み
+my $config = YAML::LoadFile("/root/.$conf_file") or YAML::LoadFile("$script_dir/$conf_file") or die $!;
+
+# Twitter変数初期化
+my $myname = $config->{twitter}->{username};
+my $tweet_count = 0;
+my $last_tweet  = '';
+
+my $screen; # Daemon化でうまくいくようにあらかじめ変数宣言しておく
+my $sound = SOUND->new( voicetext_token => $config->{voicetext}->{token}, );
+
+#
+# AnyEvent関連
+#
+
+my $cv   = AE::cv;
+my $done = AnyEvent->condvar;
+my $event;
+my $listener;
+
+# Twitter Streaming APIイベントリスナー設定関数
+$event->{twitter} = sub {
+  $listener->{twitter} = AnyEvent::Twitter::Stream->new(
+    consumer_key    => $config->{twitter}->{consumer_key},
+    consumer_secret => $config->{twitter}->{consumer_secret},
+    token           => $config->{twitter}->{access_token},
+    token_secret    => $config->{twitter}->{access_token_secret},
+    method          => 'userstream',
+
+    on_tweet => sub {
+      my $tweet = shift;
+      my $user  = $tweet->{user}->{screen_name};
+      my $text  = ($tweet->{text} || '');
+      return unless $user && $text;
+      my $tp = localtime Time::Piece->strptime( $tweet->{ created_at }, "%a %b %d %T %z %Y")->epoch;
+      my $date = $tp->strftime('%H%M%S');
+      print "$date $user: ";
+
+      $tweet_count++;
+      $screen->write_byte($tweet_count);
+
+      $last_tweet = $text;
+
+      if ( $text =~ m/\@${myname}/i ) {
+        sound('notice.wav');
+        talk2('メンションです');
+        talk2( $text );
+        $screen->show_dialog("mentionﾃﾞｽ", 'GREEN');
+      } else {
+        sound('click.wav');
+        talk( $text );
+      }
+    },
+    on_event => sub {
+      my $tweet = shift;
+      my $event = $tweet->{event};
+      my $source = $tweet->{source};
+      my $target = $tweet->{target};
+      my $target_object = $tweet->{target_object};
+      sound('notice.wav');
+      if ( $event eq 'access_revoked *') {
+        #$source eq 'Deauthorizing user';
+        #$target eq 'App owner';
+        #$target_object eq 'client_application';
+        talk('User deauthorizes stream');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'block') {
+        #$source eq 'Current user';
+        #$target eq 'Blocked user';
+        #$target_object eq 'Null';
+        talk('User blocks someone');
+        talk('【自分がブロックした】');
+        talk('ブロックしたユーザ: '. $target->{screen_name});
+      }
+      elsif ( $event eq 'unblock') {
+        #$source eq 'Current user';
+        #$target eq 'Unblocked user';
+        #$target_object eq 'Null';
+        talk('User blocks someone');
+        talk('【自分がブロック解除した】');
+        talk('ブロック解除したユーザ: '. $target->{screen_name});
+      }
+      elsif ( $event eq 'unblock') {
+        #$source eq 'Current user';
+        #$target eq 'Unblocked user';
+        #$target_object eq 'Null';
+        talk('User removes a block');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'favorite') {
+        if ( $source->{screen_name} eq $myname ) {
+          #$source eq 'Current user';
+          #$target eq 'Tweet author';
+          #$target_object eq 'Tweet';
+          #talk('User favorites a Tweet');
+          talk('【自分がファボした】');
+          talk( $target_object->{user}->{screen_name} .": ". $target_object->{text});
+          $screen->show_dialog("ｼﾞﾌﾞﾝｶﾞfavｼﾀ\n$target_object->{user}->{screen_name}", 'YELLOW');
+        }
+        else {
+          #$source eq 'Favoriting user';
+          #$target eq 'Current user';
+          #$target_object eq 'Tweet';
+          #talk('User's Tweet is favorited');
+          talk2('【自分のツイートを誰かがファボした】');
+          talk( $source->{user}->{screen_name} );
+          talk( $target_object->{user}->{screen_name} .": ". $target_object->{text});
+          $screen->show_dialog("ﾀﾞﾚｶｶﾞfavｼﾀ\n$source->{user}->{screen_name}", 'YELLOW');
+        }
+      }
+      elsif ( $event eq 'unfavorite') {
+        if ( $source->{screen_name} eq $myname ) {
+          #$source eq 'Current user';
+          #$target eq 'Tweet author';
+          #$target_object eq 'Tweet';
+          #talk('User unfavorites a Tweet');
+          talk('【自分がファボ取り消した】');
+          talk( $target_object->{user}->{screen_name} .": ". $target_object->{text});
+          $screen->show_dialog("ｼﾞﾌﾞﾝｶﾞfavﾄﾘｹｼﾀ\n$target_object->{user}->{screen_name}", 'YELLOW');
+        }
+        else {
+          #$source eq 'Unfavoriting user';
+          #$target eq 'Current user';
+          #$target_object eq 'Tweet';
+          #talk("User's Tweet is unfavorited");
+          talk('【自分のツイートを誰かがファボ取り消した】');
+          talk( $source->{user}->{screen_name} );
+          $screen->show_dialog("ﾀﾞﾚｶｶﾞfavﾄﾘｹｼﾀ\n$source->{user}->{screen_name}", 'VIOLET');
+        }
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'follow') {
+        if ( $source->{screen_name} eq $myname ) {
+          #$source eq 'Current user';
+          #$target eq 'Followed user';
+          #$target_object eq 'Null';
+          #talk('User follows someone');
+          talk('【自分がほかのユーザーをフォローした】');
+          talk2( $target->{screen_name} ." / ". $target->{user}->{screen_name} );
+          $screen->show_dialog("ﾌｫﾛｰｼﾏｼﾀ\n$target->{user}->{screen_name}", 'VIOLET');
+        }
+        else {
+          #$source eq 'Following user';
+          #$target eq 'Current user';
+          #$target_object eq 'Null';
+          #talk('User is followed');
+          talk2('あなたが誰かにフォローされました。');
+          talk2( $source->{user}->{screen_name} );
+          $screen->show_dialog("ﾌｫﾛｰｻﾚﾏｼﾀ\n$source->{user}->{screen_name}", 'VIOLET');
+        }
+      }
+      elsif ( $event eq 'unfollow') {
+        #$source eq 'Current user';
+        #$target eq 'Followed user';
+        #$target_object eq 'Null';
+        talk('User unfollows someone');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_created') {
+        #$source eq 'Current user';
+        #$target eq 'Current user';
+        #$target_object eq 'List';
+        talk('User creates a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_destroyed') {
+        #$source eq 'Current user';
+        #$target eq 'Current user';
+        #$target_object eq 'List';
+        talk('User deletes a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_updated') {
+        #$source eq 'Current user';
+        #$target eq 'Current user';
+        #$target_object eq 'List';
+        talk('User edits a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_member_added') {
+        #$source eq 'Current user';
+        #$target eq 'Added user';
+        #$target_object eq 'List';
+        talk('User adds someone to a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_member_added') {
+        #$source eq 'Adding user';
+        #$target eq 'Current user';
+        #$target_object eq 'List';
+        talk('User is added to a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_member_removed') {
+        #$source eq 'Current user';
+        #$target eq 'Removed user';
+        #$target_object eq 'List';
+        talk('User removes someone from a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_member_removed') {
+        #$source eq 'Removing user';
+        #$target eq 'Current user';
+        #$target_object eq 'List';
+        talk('User is removed from a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_user_subscribed') {
+        #$source eq 'Current user';
+        #$target eq 'List owner';
+        #$target_object eq 'List';
+        talk('User subscribes to a list');
+      }
+      elsif ( $event eq 'list_user_subscribed') {
+        #$source eq 'Subscribing user';
+        #$target eq 'Current user';
+        #$target_object eq 'List';
+        talk("User's list is subscribed to");
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_user_unsubscribed') {
+        #$source eq 'Current user';
+        #$target eq 'List owner';
+        #$target_object eq 'List';
+        talk('User unsubscribes from a list');
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'list_user_unsubscribed') {
+        #$source eq 'Unsubscribing user';
+        #$target eq 'Current user';
+        #$target_object eq 'List';
+        talk("User's list is unsubscribed from");
+        print Dump $tweet;
+      }
+      elsif ( $event eq 'user_update') {
+        #$source eq 'Current user';
+        #$target eq 'Current user';
+        #$target_object eq 'Null';
+        talk('User updates their profile or protected status');
+        sound('info.wav');
+        print Dump $tweet;
+      }
+      else {
+        talK('何かイベントがあったみたい');
+        print Dump $tweet;
+      }
+    },
+    on_delete => sub {
+      my $id = shift;
+      sound('delete.wav');
+      talk("誰かがツイ消ししたみたい");
+      print "$id\n";
+      $screen->show_dialog("ﾀﾞﾚｶｶﾞ｢ﾂｲｹｼ｣ｼﾀ\n$id", 'VIOLET');
+    },
+    on_error => sub { # 何らかのエラー発生（再接続をしたい）
+      my $error = shift;
+      warn "ERROR: $error";
+      $screen->backlight( $screen->{color}->{RED} );
+      undef $listener->{twitter}; # Twitterのウォッチャー消す
+      $event->{timer_reconnection}->(5); # 〔Twitterのウォッチャー〕のウォッチャー再設定
+    },
+    on_eof   => sub {
+      warn "EOF";
+      $screen->backlight( $screen->{color}->{RED} );
+      $done->send;
+    },
+  );
+};
+
+# Twitter再接続タイマーループ
+$event->{timer_reconnection} = sub {
+  my $after = shift || 0;
+  $listener->{timer_reconnection} = AnyEvent->timer(
+    after => $after,
+    cb => sub {
+      unless ( $listener->{twitter} ) {
+        $screen->clear();
+        $screen->backlight( $screen->{color}->{WHITE} );
+        $screen->message("\n(re)connected");
+        print "(re)connected\n";
+        sound('start.wav');
+        undef $listener->{timer_reconnection};
+        $event->{twitter}->();
+      }
+    },
+  );
+};
+
+# 0.05秒タイマーループ（キーセンス）
+$event->{timer_keysense} = sub {
+  $listener->{timer_keysense} = AnyEvent->timer(
+    interval => 0.05,
+    cb => sub {
+      # 最後のツイートをしゃべる
+      if ( $screen->buttonPressed(1) ) { # RIGHT
+        unless ($last_tweet eq '') {
+          sound('cursor.wav');
+          talk2( $last_tweet);
+          $last_tweet = '';
+        }
+      }
+      # テスト表示：緑バックライト
+      if ( $screen->buttonPressed(2) ) { # DOWN
+        $screen->show_dialog('test!', 'GREEN');
+        sound('click.wav');
+      }
+      # 5秒長押しで電源OFF
+      if ( $screen->buttonPressed(0) ) { # SELECT
+        print ref($listener->{timer_shutdown}) . "\n";
+        if ( ref $listener->{timer_shutdown} ne 'ARRAY' ) {
+          $listener->{timer_shutdown} = AnyEvent->timer(
+            after => 5,
+            cb => sub {
+              if ( $screen->buttonPressed(0) ) { # SELECT
+                $screen->clear();
+                $screen->backlight( $screen->{color}->{BLUE} );
+                $screen->message("Shutdown...");
+                $cv->send;
+                system('shutdown -h now');
+              }
+              else {
+                undef $listener->{timer_shutdown};
+              }
+            },
+          );
+        }
+      } else {
+        undef $listener->{timer_shutdown};
+      }
+    },
+  );
+};
+
+# 1秒ループ（画面フレーム進行）
+$event->{timer_tick} = sub {
+  $listener->{timer_tick} = AnyEvent->timer(
+    interval => 1,
+    cb => sub { # イベント発生時にこの関数が呼ばれる
+      $screen->{pos}++;
+      $screen->{pos} %= 32;
+      $tweet_count = 0;
+      $screen->write_byte( encode('cp932', "･" ) );
+    }
+  );
+};
+
+# Proc::Daemon デーモン化
+
+&init; # Proc::Daemon のイニシャライズ
+&run;  # Proc::Daemon 実行開始
+
+sub init { # Proc::Daemon の初期化ルーチン
+    $SIG{INT } = 'interrupt';      # Ctrl-C
+    $SIG{HUP } = 'interrupt';      # HUP  SIGNAL
+    $SIG{QUIT} = 'interrupt';      # QUIT SIGNAL
+    $SIG{KILL} = 'interrupt';      # KILL SIGNAL
+    $SIG{TERM} = 'interrupt';      # TERM SIGNAL
+    if ($DAEMON) { # as a daemon
+      Proc::Daemon::Init( {
+        work_dir     => '/var/run',
+        pid_file     => 'lcdtwit.pid',
+        child_STDOUT => ">$log_file",
+        child_STDERR => ">$err_file",
+      });
+      $|=1; # 標準出力をauto flush
+    }
+    binmode STDOUT => ':utf8';
+    binmode STDERR => ':utf8';
+    $screen = SCREEN->new();
+    $screen->init();
+}
+
+sub run { # Proc:Daemon の実行ルーチン。イベントループを発生
+  while(1) {
+    &action;
+  }
+}
+
+sub action { # run内のイベントループから呼ばれるルーチン
+  $screen->begin(16, 2);
+  $screen->backlight( $screen->{color}->{RED} );
+  $screen->clear();
+  $screen->cursor();
+  $screen->message(encode('cp932', "Twitterﾆｾﾂｿﾞｸﾁｭｳ\nPlease wait..."));
+  sleep 3;
+  # 〔Twitterのウォッチャー〕のウォッチャーを起動
+  $event->{timer_reconnection}->();
+  $event->{timer_tick}->();
+  $event->{timer_keysense}->();
+  $cv->recv; # ここでイベントループ成立：後ろにはいかない
+  $screen->clear();
+  $screen->stop();
+  exit;
+}
+
+sub interrupt { # Proc:Daemon の割り込み処理ルーチン
+  my $sig = shift;
+  setpgrp;                 # I *am* the leader
+  $SIG{$sig} = 'IGNORE';
+  kill $sig, 0;            # death to all-comers
+  $screen->clear();
+  $screen->stop();
+  die "killed by $sig";
+  exit(0);
+}
+
+#
+# その他のサブルーチン
+#
+
+sub sound {
+  my $file = shift;
+  $sound->play($file);
+  #system('play -q ' . "$script_dir/$file" . ' 2> /dev/null &');
+}
+
+sub talk {
+  my $mes = shift;
+  $mes =~ s/&lt;/</g;
+  $mes =~ s/&gt;/>/g;
+  $mes =~ s/&amp;/&/g;
+  print "$mes\n";
+  if ( $TALK ) {
+    $sound->talk($mes);
+  }
+}
+
+sub talk2 {
+  my $mes = shift;
+  $mes =~ s/&lt;/</g;
+  $mes =~ s/&gt;/>/g;
+  $mes =~ s/&amp;/&/g;
+  print "$mes\n";
+  $sound->talk($mes);
+}
+
+#
+# SCREENパッケージ
+# Adafruit_CharLCDPlateを継承
+#
+
+package SCREEN;
+use base qw( Adafruit_CharLCDPlate );
+use strict;
+use warnings;
+use Encode;
+
+sub new {
+  my $class = shift;
+  my %args = ( @_ );
+  my $self = Adafruit_CharLCDPlate->new;
+  $self = {
+    %$self,
+    buffer => [],
+    pos    => -1,
+    dialog => 0,
+  };
+  return bless $self, $class;
+}
+
+sub write_byte {
+  my $self = shift;
+  my $mes  = shift;
+  unless ($self->{dialog}) {
+    $self->set_pos( $self->{pos} );
+    $self->message( $mes );
+    $self->set_pos( $self->{pos} );
+  }
+  $self->{buffer}->[$self->{pos}] = $mes;
+}
+
+sub show_dialog {
+  my $self = shift;
+  my $message = shift;
+  my $color   = shift;
+  $message = encode('cp932', $message);
+  $self->{dialog} = 1;
+  $self->noCursor();
+  $self->clear();
+  $self->backlight( $self->{color}->{$color} );
+  $self->message($message);
+  $listener->{timer_hidedialog} = AnyEvent->timer(
+    after => 3,
+    cb => sub {
+      $self->{dialog} = 0;
+      $self->backlight( $self->{color}->{WHITE} );
+      for (my $i = 0; $i < 32; $i++) {
+        my $var = $self->{buffer}->[$i];
+        if ( $var ) {
+          $self->set_pos( $i );
+          $self->message( $var );
+        }
+      }
+      $self->set_pos( $self->{pos} );
+      $self->cursor();
+    },
+  );
+}
+
+sub set_pos {
+  my $self = shift;
+  my $pos  = shift;
+  $self->setCursor( $pos % 16, int($pos / 16) );
+}
+
+#
+# SOUNDパッケージ
+#
+#
+
+package SOUND;
+use strict;
+use warnings;
+
+sub new {
+  my $class = shift;
+  my %args = ( @_ );
+  my $self = {
+  };
+  $self->{voicetext_token} = $args{voicetext_token} if $args{voicetext_token};
+  return bless $self, $class;
+}
+
+sub play {
+  my $self = shift;
+  my $file = shift;
+  my $path = "$script_dir/$file";
+  if ( -e $path ) {
+    my $cmd = "cat $script_dir/$file | aplay -q &";
+    print STDERR "$cmd\n";
+    system($cmd);
+  }
+}
+
+sub talk {
+  my $self = shift;
+  my $mes  = shift;
+  $mes =~ s/'/\\'/g;
+  $mes =~ s/\n/ /g;
+  return if $mes eq '';
+  return unless exists $self->{voicetext_token};
+  # Use VoiceText API
+  my $cmd = 'curl https://api.voicetext.jp/v1/tts -s'
+          . " -u $self->{voicetext_token}:"
+          . ' -d speed=130 -d speaker=hikari -d emotion=happiness'
+          . " -d 'text=$mes' | aplay -q &";
+  print STDERR "$cmd\n";
+  system($cmd);
+}
+
+1;
