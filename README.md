@@ -11,7 +11,7 @@ TwitterのTimeLineをストリーミングで受信しカラーバックライ�
 ## Software
 
 * Raspbian(wheezy)
-* Perl 5.14(bilt-in)
+* Perl 5.14(built-in)
 * HiPi(GPIO module for Raspberry Pi)
 
 ## Images
