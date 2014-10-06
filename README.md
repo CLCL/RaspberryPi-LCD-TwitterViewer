@@ -1,5 +1,7 @@
 #RaspberryPi-LCD-TwitterViewer
 
+TwitterのTimeLineをストリーミングで受信しカラーバックライト付きLCD表示装置にステータスを表示、ボタン操作でVoiceText APIを使って読み上げます。
+
 ## Hardware
 
 * Raspberry Pi B(Rev 2.0)
