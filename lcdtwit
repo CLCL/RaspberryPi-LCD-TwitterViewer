@@ -3,6 +3,7 @@
 use strict;
 use warnings;
 use FindBin;
+use File::Path;
 use File::Spec;
 use lib File::Spec->catdir($FindBin::Bin, 'local/lib/perl5');
 use lib $FindBin::Bin;
@@ -23,7 +24,7 @@ binmode STDOUT => ':utf8';
 my $TALK = 0;
 my $DAEMON = 1;
 my $log_dir   = "$script_dir/log";
-mkdir $log_dir unless -e $log_dir;
+mkpath $log_dir unless -e $log_dir; # File::Pathによるmkdir -p
 my $log_file  = "$log_dir/out.log";
 my $err_file  = "$log_dir/err.log";
 my $conf_file = 'lcdtwit.yaml';

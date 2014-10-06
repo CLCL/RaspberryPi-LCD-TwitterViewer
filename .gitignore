@@ -1,0 +1,7 @@
+cpanfile.snapshot
+*.wav
+bak/
+local/
+log/*.log
+sound/
+
