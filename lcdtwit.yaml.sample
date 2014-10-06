@@ -1,0 +1,9 @@
+---
+twitter:
+    username: '_HOGE_'
+    access_token: '14000000-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    access_token_secret: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    consumer_key: 'xxxxxxxxxxxxxxxxxxxxx'
+    consumer_secret: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+voicetext: 
+    token: "xxxxxxxxxxxxxxxx"
