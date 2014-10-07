@@ -4,15 +4,15 @@ TwitterのTimeLineをストリーミングで受信しカラーバックライ�
 
 ## Hardware
 
-* Raspberry Pi B(Rev 2.0)
-* Adafruit i2c 16x2 RGB LCD Pi Plate
-* Speaker(3.5mm jack)
+* Raspberry Pi B 512MB(Rev 2.0) [switch-science.com](http://www.switch-science.com/catalog/1268/)
+* Adafruit i2c 16x2 RGB LCD Pi Plate [switch-science.com](http://www.switch-science.com/catalog/1478/)
+* Speaker(3.5mm jack) 
 
 ## Software
 
 * Raspbian(wheezy)
 * Perl 5.14(built-in)
-* HiPi(GPIO module for Raspberry Pi)
+* HiPi(GPIO module for Raspberry Pi) [raspberry.znix.com](http://raspberry.znix.com/)
 
 ## Images
 
