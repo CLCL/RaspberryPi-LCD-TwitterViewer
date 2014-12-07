@@ -272,7 +272,7 @@ $event->{twitter} = sub {
         print Dump $tweet;
       }
       else {
-        talK('何かイベントがあったみたい');
+        talk('何かイベントがあったみたい');
         print Dump $tweet;
       }
     },
@@ -333,7 +333,7 @@ $event->{timer_keysense} = sub {
       # テスト表示：緑バックライト
       if ( $screen->buttonPressed(2) ) { # DOWN
         $screen->show_dialog('test!', 'GREEN');
-        sound('click.wav');
+        sound('notice.wav');
       }
       # 5秒長押しで電源OFF
       if ( $screen->buttonPressed(0) ) { # SELECT
